@@ -58,7 +58,7 @@ redirect_conf = """
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
-    return 301 https://$host$request_uri;
+    return 301 https://{}$request_uri;
 }
 """
 
@@ -146,7 +146,7 @@ class Certbot(object):
 
 
 def create_conf(certbot):
-    create_redirect()
+    create_redirect(certbot.domain)
 
     custom_include = ""
     if os.path.exists("/etc/nginx/conf.d/custom/"):
@@ -171,9 +171,9 @@ def fail_with_error_message(msg):
     sys.exit(1)
 
 
-def create_redirect():
+def create_redirect(domain):
     with open("/etc/nginx/conf.d/redirect.conf", "w") as fd:
-        fd.write(redirect_conf)
+        fd.write(redirect_conf.format(domain))
     logging.info("http redirect created")
 
 
