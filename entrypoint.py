@@ -55,11 +55,11 @@ server {{
 """
 
 redirect_conf = """
-server {
+server {{
     listen 80 default_server;
     listen [::]:80 default_server;
-    return 301 https://{}$request_uri;
-}
+    return 301 https://{0}$request_uri;
+}}
 """
 
 
