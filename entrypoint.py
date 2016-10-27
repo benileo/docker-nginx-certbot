@@ -101,7 +101,7 @@ class Certbot(object):
         self.add_arg("--must-staple")
         self.add_arg("--non-interactive")
         self.add_arg("--rsa-key-size", "4096")
-        self.add_arg("--standalone-supported-challenges", "http-01")
+        self.add_arg("--preferred-challenges", "http-01")
         self.add_arg("--post-hook", "post-hook.sh")
         self.add_arg("--domain", self.domain)
         self.add_arg("--email", self.email)
