@@ -28,8 +28,12 @@ function start_boulder {
      echo "boulder is running..."
 }
 
+function killPort {
+	lsof -i tcp:${1} -sTCP:listen | awk 'NR!=1 {print $2}' | xargs kill -9
+}
+
 function start_redirect {
-    kill -9 $(netstat -lntp 2> /dev/null | grep 5002 | awk '{print $7}' | tr "/" "\n" | head -n 1) > /dev/null 2> /dev/null || true
+    killPort 5002
     python redirect.py &
 }
 
@@ -39,6 +43,7 @@ function test_with_correct_env_vars {
         -e SERVER=http://127.0.0.1:4000/directory \
         -e DOMAIN=le1.wtf \
         -e EMAIL=test@example.com \
+        -e DEBUG=1 \
         ${IMAGE})
 }
 
@@ -46,6 +51,10 @@ function cleanup {
     kill $(jobs -p)
 }
 
+sudo netstat -lnt4p \
+    | grep -E '(443|5002)' \
+    | awk '{split($7, a, "/"); print a[1]}' \
+    | sudo xargs kill -9
 start_boulder
 start_redirect
 test_with_correct_env_vars

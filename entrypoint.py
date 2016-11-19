@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 
 logging.basicConfig(level=logging.INFO)
 
@@ -103,6 +104,7 @@ class Config(object):
 
 
 class Certbot(object):
+    done_lock = threading.Lock()
 
     def __init__(self, config):
         self.args = dict()
@@ -202,13 +204,14 @@ class Process(object):
 
     @classmethod
     def kill_all(cls):
+        """This is very agressive - the os just blindly terminating processes"""
         logging.info("performing shutdown clean up")
         for process in cls.processes:
             if process.poll() is None:
                 cls.kill(process)
 
 
-def should_obtain_certificates(domain):
+def certs_exist(domain):
     """
     The existence of the full chain certificate is the indication of whether
     we try to obtain certificates for Let's Encrypt.
@@ -281,26 +284,73 @@ def parse_environment():
     return config
 
 
-def run_certbot(certbot):
+def obtain_cert(config):
+    """
+    Go and get the certificates for LE
+    :param certbot:
+    :return:
+    """
+    certbot = Certbot(config)
+    # wait for nginx to be running
     Nginx.start_lock.acquire()
     certbot.run()
-    Nginx.remove_proxy_config()
-    create_nginx_config_file(certbot.domain)
-    Nginx.reload()
+    Nginx.remove_proxy_config()  # clean up proxy config
+    create_nginx_config_file(certbot.domain)  # gen the config file
+    Nginx.reload()  # reload nginx with a sighup
+    Nginx.start_lock.release()
+    Certbot.done_lock.release()  # signal to the renewer that it can start
+
+
+def run_renewer(config):
+    """
+    Nginx must be running
+    And certbot cmd must be done by now
+    :return:
+    """
+    Certbot.done_lock.acquire()
+    Nginx.start_lock.acquire()
+    while True:
+        # try and renew right away - to see if anything will go wrong.
+        cmd = ["certbot", "renew", "--pre-hook", "nginx -s stop"]
+        if config.debug:
+            cmd.append("--force-renewal")
+        try:
+            output = subprocess.check_output(cmd)
+        except subprocess.CalledProcessError as err:
+            logging.error(err)
+        else:
+            if config.debug:
+                logging.info(output)
+        time.sleep(3600)
 
 
 def main():
+    Nginx.start_lock.acquire()
+    Certbot.done_lock.acquire()
+
     atexit.register(Process.kill_all)
     config = parse_environment()
     domain = config.get("domain")
 
-    Nginx.start_lock.acquire()
-    if should_obtain_certificates(domain):
-        Nginx.write_proxy_config()
-        threading.Thread(target=run_certbot, args=(Certbot(config),)).start()
-    else:
-        create_nginx_config_file(domain)
+    threading.Thread(target=run_renewer, args=(config,)).start()
 
+    # Case 1: we don't have a certificate yet
+    # write the proxy config and then run certbot. note that the thread will
+    # wait for nginx to start before it starts up.
+    # certbot is only ran under the circumstance that the certificates dont
+    # already exist
+    if certs_exist(domain):
+        Nginx.write_proxy_config()
+        threading.Thread(target=obtain_cert, args=(config,)).start()
+        Nginx.start()
+
+    logging.info('we already have the existing certificates')
+    # Case 2: we already have a certificate
+    # nginx runs forever, what about the case where we have a certificate
+    # but its expired... release the certbot done lock because we never actually
+    # ran it.
+    Certbot.done_lock.release()
+    create_nginx_config_file(domain)
     Nginx.start()
 
 if __name__ == "__main__":
