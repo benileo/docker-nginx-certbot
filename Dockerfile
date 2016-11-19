@@ -42,7 +42,5 @@ RUN set -e \
         /tmp/* \
         /var/tmp/*
 
-COPY rsyslog.conf /etc/rsyslog.conf
 COPY entrypoint.py .
-
 ENTRYPOINT [ "./entrypoint.py" ]

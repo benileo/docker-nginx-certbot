@@ -294,9 +294,6 @@ def main():
     config = parse_environment()
     domain = config.get("domain")
 
-    Process.start(["rsyslogd", "-n"])
-    Process.start(["cron", "-f"])
-
     Nginx.start_lock.acquire()
     if should_obtain_certificates(domain):
         Nginx.write_proxy_config()
