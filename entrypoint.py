@@ -155,15 +155,15 @@ class Nginx(object):
     _running = False
     _exiting = False
     config_path = "/etc/nginx/conf.d/reverse_proxy.conf"
-    lock = threading.Lock()
+    _lock = threading.Lock()
 
     @classmethod
     def disallow_start(cls):
-        cls.lock.acquire()
+        cls._lock.acquire()
 
     @classmethod
     def allow_start(cls):
-        cls.lock.release()
+        cls._lock.release()
 
     @classmethod
     def is_running(cls):
@@ -188,11 +188,11 @@ class Nginx(object):
 
     @classmethod
     def _start(cls):
-        cls.lock.acquire()
+        cls._lock.acquire()
         logging.info('starting nginx')
         cls._handle = subprocess.Popen(NGINX_CMD)
         cls._running = True
-        cls.lock.release()
+        cls._lock.release()
 
     @classmethod
     def reload(cls):
