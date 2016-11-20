@@ -15,7 +15,7 @@ RUN set -e \
         -out /etc/nginx/ssl/nginx.crt
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-		curl \
+		curl
 
 ENV CERTBOT_VERSION 0.9.3
 ENV BASE_URL https://github.com/certbot/certbot/archive/v
@@ -30,7 +30,7 @@ RUN set -e \
     && pip install acme certbot
 
 RUN set -e \
-    && apt-get remove -y --purge curl \  # No longer needed
+    && apt-get remove -y --purge curl \
     && apt-get autoremove -y \
     && apt-get clean \
     && rm -rf \
