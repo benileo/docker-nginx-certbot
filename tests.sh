@@ -32,9 +32,11 @@ function killPort {
 	lsof -i tcp:${1} -sTCP:listen | awk 'NR!=1 {print $2}' | xargs kill -9
 }
 
+redirect_pid=
 function start_redirect {
     killPort 5002
     python redirect.py &
+    redirect_pid=$!
 }
 
 function test_with_correct_env_vars {
@@ -48,13 +50,17 @@ function test_with_correct_env_vars {
 }
 
 function cleanup {
+    if [ -n $redirect_pid ]; then kill -9 $redirect_pid; fi
     kill $(jobs -p)
 }
 
-sudo netstat -lnt4p \
-    | grep -E '(443|5002)' \
-    | awk '{split($7, a, "/"); print a[1]}' \
-    | sudo xargs kill -9
+while sudo netstat -lnt46p | grep -E '(433|5002)'; do
+    sudo netstat -lnt46p \
+        | grep -E '(443|5002)' \
+        | awk '{split($7, a, "/"); print a[1]}' \
+        | sudo xargs kill -9
+    sleep 0.2
+done
 start_boulder
 start_redirect
 test_with_correct_env_vars

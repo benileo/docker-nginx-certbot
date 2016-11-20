@@ -9,40 +9,35 @@ import sys
 import threading
 import time
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG,
+                    format="%(asctime)s:autotls:%(message)s")
 
+# Based on https://mozilla.github.io/server-side-tls/ssl-config-generator/
+# for Nginx 1.11.3
 TLS_CONFIG = """
 server {{
-    # Based on https://mozilla.github.io/server-side-tls/ssl-config-generator/
-    # for Nginx 1.11.3
-
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
     server_name {0};
+    listen 443 ssl http2;
+    # listen [::]:443 ssl http2;
 
+    ssl_certificate {1};
+    ssl_certificate_key {2};
+    ssl_ciphers 'ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA256:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES256-SHA384:ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES256-SHA384:ECDHE-ECDSA-AES256-SHA:ECDHE-RSA-AES256-SHA:DHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA:DHE-RSA-AES256-SHA256:DHE-RSA-AES256-SHA:ECDHE-ECDSA-DES-CBC3-SHA:ECDHE-RSA-DES-CBC3-SHA:EDH-RSA-DES-CBC3-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA256:AES256-SHA256:AES128-SHA:AES256-SHA:DES-CBC3-SHA:!DSS';
+    ssl_dhparam /etc/ssl/certs/dhparam.pem;
+    ssl_prefer_server_ciphers on;
+    ssl_protocols TLSv1 TLSv1.1 TLSv1.2;
     ssl_session_timeout 1d;
     ssl_session_cache shared:SSL:50m;
     ssl_session_tickets off;
-    ssl_certificate {1};
-    ssl_certificate_key {2};
-    ssl_trusted_certificate {3};
-
-    # intermediate configuration. tweak to your needs.
-    ssl_protocols TLSv1 TLSv1.1 TLSv1.2;
-    ssl_ciphers 'ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA256:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES256-SHA384:ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES256-SHA384:ECDHE-ECDSA-AES256-SHA:ECDHE-RSA-AES256-SHA:DHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA:DHE-RSA-AES256-SHA256:DHE-RSA-AES256-SHA:ECDHE-ECDSA-DES-CBC3-SHA:ECDHE-RSA-DES-CBC3-SHA:EDH-RSA-DES-CBC3-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA256:AES256-SHA256:AES128-SHA:AES256-SHA:DES-CBC3-SHA:!DSS';
-    ssl_prefer_server_ciphers on;
-
-    # fetch OCSP records from URL in ssl_certificate and cache them
     ssl_stapling on;
     ssl_stapling_verify on;
-
-    # Diffie-Hellman parameter for DHE ciphersuites, recommended 2048 bits
-    ssl_dhparam /etc/ssl/certs/dhparam.pem;
+    ssl_trusted_certificate {3};
 
     # HSTS (ngx_http_headers_module is required) (15768000 seconds = 6 months)
     add_header Strict-Transport-Security max-age=15768000;
 
     # A resolver must be set for resolving OCSP responder hostname
+    # This should be configurable
     resolver 8.8.4.4 8.8.8.8;
 
     # If there is a conf file, these directives will
@@ -52,10 +47,11 @@ server {{
     # /etc/nginx/conf.d/custom/
     #
     # Note: adding duplicates to the directives defined
-    # above will cause errors.
+    # above will cause errors. This sucks....
     {4}
 }}
 """
+
 
 PROXY_CONFIG = """
 server {
@@ -77,7 +73,7 @@ PRIVATE_KEY = "privkey.pem"
 
 CHAIN = "chain.pem"
 
-NGINX_CMD = ["nginx", "-g", "daemon off;"]
+NGINX_CMD = ["/usr/sbin/nginx", "-g", "daemon off;"]
 
 
 class Config(object):
@@ -122,8 +118,8 @@ class Certbot(object):
 
         if self.config.get("staging"):
             self.add_arg("--staging")
-        if self.config.get("debug"):
-            self.add_arg("-vvv", "--text")
+        # if self.config.get("debug"):
+        #     self.add_arg("-vvv", "--text")
         if self.config.get("server"):
             self.add_arg("--server", self.config.get("server"))
 
@@ -155,21 +151,66 @@ class Certbot(object):
 
 
 class Nginx(object):
-    handle = None
+    _handle = None
+    _running = False
+    _exiting = False
     config_path = "/etc/nginx/conf.d/reverse_proxy.conf"
-    start_lock = threading.Lock()
+    lock = threading.Lock()
 
     @classmethod
-    def start(cls):
-        if cls.handle is None:
-            cls.handle = Process.start(NGINX_CMD)
-            cls.start_lock.release()
-            cls.handle.wait()  # wait forever
+    def disallow_start(cls):
+        cls.lock.acquire()
 
     @classmethod
-    def write_proxy_config(cls):
-        with open(cls.config_path, "w") as fo:
-            fo.write(PROXY_CONFIG)
+    def allow_start(cls):
+        cls.lock.release()
+
+    @classmethod
+    def is_running(cls):
+        return cls._running
+
+    @classmethod
+    def run_forever(cls):
+        while 1:
+            if cls._handle is None:
+                cls._start()
+            try:
+                cls._handle.wait()
+            except KeyboardInterrupt:
+                cls.stop()
+                logging.info("goodbye")
+                break
+            cls._running = False
+            cls._handle = None
+            logging.debug('nginx process has stopped')
+            if cls._exiting:
+                break
+
+    @classmethod
+    def _start(cls):
+        cls.lock.acquire()
+        logging.info('starting nginx')
+        cls._handle = subprocess.Popen(NGINX_CMD)
+        cls._running = True
+        cls.lock.release()
+
+    @classmethod
+    def reload(cls):
+        logging.info("reloading nginx")
+        cls._handle.send_signal(signal.SIGHUP)
+
+    @classmethod
+    def stop(cls):
+        logging.info("stopping nginx")
+        if cls._handle and cls._handle.poll() is None:
+            cls._handle.send_signal(signal.SIGQUIT)
+        cls._handle = None
+
+    @classmethod
+    def on_exit(cls):
+        cls._exiting = True
+        if cls._handle:
+            cls.stop()
 
     @classmethod
     def remove_proxy_config(cls):
@@ -177,38 +218,9 @@ class Nginx(object):
             os.remove(cls.config_path)
 
     @classmethod
-    def reload(cls):
-        logging.info("reloading nginx")
-        cls.handle.send_signal(signal.SIGHUP)
-
-
-class Process(object):
-    processes = []
-
-    @classmethod
-    def start(cls, cmd, add=True):
-        if not isinstance(cmd, list):
-            raise ValueError('arguments must be of type list')
-        handle = subprocess.Popen(cmd)
-        logging.info("started {} ({})".format(cmd[0], handle.pid))
-        cls.processes.append(handle)
-
-        return handle
-
-    @classmethod
-    def kill(cls, handle):
-        if not isinstance(handle, subprocess.Popen):
-            raise ValueError('argument must of type Popen')
-        logging.info("sending SIGKILL to pid {}".format(handle.pid))
-        handle.kill()
-
-    @classmethod
-    def kill_all(cls):
-        """This is very agressive - the os just blindly terminating processes"""
-        logging.info("performing shutdown clean up")
-        for process in cls.processes:
-            if process.poll() is None:
-                cls.kill(process)
+    def write_proxy_config(cls):
+        with open(cls.config_path, "w") as fo:
+            fo.write(PROXY_CONFIG)
 
 
 def certs_exist(domain):
@@ -216,7 +228,7 @@ def certs_exist(domain):
     The existence of the full chain certificate is the indication of whether
     we try to obtain certificates for Let's Encrypt.
 
-    :param domain:
+    :param domain string
     :return: bool
     """
     return not os.path.exists(live_dir_path(domain, FULL_CHAIN))
@@ -291,13 +303,17 @@ def obtain_cert(config):
     :return:
     """
     certbot = Certbot(config)
-    # wait for nginx to be running
-    Nginx.start_lock.acquire()
+    while not Nginx.is_running():
+        pass
+
+    Nginx.write_proxy_config()
     certbot.run()
-    Nginx.remove_proxy_config()  # clean up proxy config
-    create_nginx_config_file(certbot.domain)  # gen the config file
-    Nginx.reload()  # reload nginx with a sighup
-    Nginx.start_lock.release()
+    Nginx.remove_proxy_config()
+
+    create_nginx_config_file(certbot.domain)
+    Nginx.reload()
+    time.sleep(1)  # give nginx a second to reload, todo: use something proper
+
     Certbot.done_lock.release()  # signal to the renewer that it can start
 
 
@@ -308,27 +324,40 @@ def run_renewer(config):
     :return:
     """
     Certbot.done_lock.acquire()
-    Nginx.start_lock.acquire()
-    while True:
+    logging.info('starting renewer')
+    while 1:
         # try and renew right away - to see if anything will go wrong.
-        cmd = ["certbot", "renew", "--pre-hook", "nginx -s stop"]
-        if config.debug:
-            cmd.append("--force-renewal")
+        # Note: this may be an idea for certbot: I don't think we actually
+        # have to stop the nginx server here because we don't need to
+        # re-validate our key. We have a validated key at this point. We
+        # just need to hit boulders `NewCertificate` endpoint and then
+        # reload nginx instead of stopping it. My only concern with this is
+        # permissions regarding over-writing the certificates. If they are
+        # currently being held in memory by the Nginx master process then
+        # will we be allowed.
+        # Todo: check first to see if renewing should happen, because we
+        # will stop nginx
+        Nginx.disallow_start()
+        Nginx.stop()
+        # you may get a race condition here where are waiting for nginx to
+        # stop and the time you get to renew.
+        time.sleep(1)
         try:
-            output = subprocess.check_output(cmd)
-        except subprocess.CalledProcessError as err:
-            logging.error(err)
-        else:
             if config.debug:
-                logging.info(output)
-        time.sleep(3600)
+                subprocess.check_call(["certbot", "renew", "--force-renewal"])
+            else:
+                subprocess.check_call(["certbot renew"])
+            Nginx.allow_start()
+        except subprocess.CalledProcessError as perr:
+            logging.debug("error renewing certificate: %s", perr)
+        finally:
+            time.sleep(3600)
 
 
 def main():
-    Nginx.start_lock.acquire()
+    atexit.register(Nginx.on_exit)
     Certbot.done_lock.acquire()
 
-    atexit.register(Process.kill_all)
     config = parse_environment()
     domain = config.get("domain")
 
@@ -340,18 +369,18 @@ def main():
     # certbot is only ran under the circumstance that the certificates dont
     # already exist
     if certs_exist(domain):
-        Nginx.write_proxy_config()
         threading.Thread(target=obtain_cert, args=(config,)).start()
-        Nginx.start()
 
-    logging.info('we already have the existing certificates')
     # Case 2: we already have a certificate
     # nginx runs forever, what about the case where we have a certificate
     # but its expired... release the certbot done lock because we never actually
     # ran it.
-    Certbot.done_lock.release()
-    create_nginx_config_file(domain)
-    Nginx.start()
+    else:
+        logging.info('we already have the existing certificates')
+        Certbot.done_lock.release()
+        create_nginx_config_file(domain)
+
+    Nginx.run_forever()
 
 if __name__ == "__main__":
     main()
