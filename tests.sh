@@ -55,11 +55,12 @@ function cleanup {
 }
 
 while sudo netstat -lnt46p | grep -E '(433|5002)'; do
+    echo 'killing already running servers'
     sudo netstat -lnt46p \
         | grep -E '(443|5002)' \
         | awk '{split($7, a, "/"); print a[1]}' \
         | sudo xargs kill -9
-    sleep 0.2
+    sleep 1
 done
 start_boulder
 start_redirect

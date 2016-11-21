@@ -75,6 +75,12 @@ CHAIN = "chain.pem"
 
 NGINX_CMD = ["/usr/sbin/nginx", "-g", "daemon off;"]
 
+NGINX_RENEW_CMD = ("""certbot renew --pre-hook 'service nginx stop' """
+                   """--preferred-challenges http-01 --agree-tos """
+                   """--standalone --must-staple """)
+
+NGINX_FORCE_RENEW_CMD = NGINX_RENEW_CMD + "--force-renewal"
+
 
 class Config(object):
 
@@ -277,7 +283,7 @@ def parse_environment():
 
     Or what about if the container was ran like docker run domain email
     we only really care if the domain and email exists
-    :return:
+    :rtype Config
     """
     config = Config()
 
@@ -296,15 +302,19 @@ def parse_environment():
     return config
 
 
+def wait_for_nginx():
+    while not Nginx.is_running():
+        pass
+
+
 def obtain_cert(config):
     """
     Go and get the certificates for LE
-    :param certbot:
+    :param config Config
     :return:
     """
     certbot = Certbot(config)
-    while not Nginx.is_running():
-        pass
+    wait_for_nginx()
 
     Nginx.write_proxy_config()
     certbot.run()
@@ -312,45 +322,41 @@ def obtain_cert(config):
 
     create_nginx_config_file(certbot.domain)
     Nginx.reload()
-    time.sleep(1)  # give nginx a second to reload, todo: use something proper
 
-    Certbot.done_lock.release()  # signal to the renewer that it can start
-
+    # give nginx a second to reload, todo: use something proper
+    time.sleep(1)
+    # signal to the renewer that it can start
+    Certbot.done_lock.release()
 
 def run_renewer(config):
     """
     Nginx must be running
     And certbot cmd must be done by now
-    :return:
+
+    Note: this may be an idea for certbot: I don't think we actually
+    have to stop the nginx server here because we don't need to
+    re-validate our key. We have a validated key at this point. We
+    just need to hit boulders `NewCertificate` endpoint and then
+    reload nginx instead of stopping it. My only concern with this is
+    permissions regarding over-writing the certificates. If they are
+    currently being held in memory by the Nginx master process then
+    will we be allowed.
     """
+    wait_for_nginx()
     Certbot.done_lock.acquire()
     logging.info('starting renewer')
     while 1:
         # try and renew right away - to see if anything will go wrong.
-        # Note: this may be an idea for certbot: I don't think we actually
-        # have to stop the nginx server here because we don't need to
-        # re-validate our key. We have a validated key at this point. We
-        # just need to hit boulders `NewCertificate` endpoint and then
-        # reload nginx instead of stopping it. My only concern with this is
-        # permissions regarding over-writing the certificates. If they are
-        # currently being held in memory by the Nginx master process then
-        # will we be allowed.
-        # Todo: check first to see if renewing should happen, because we
-        # will stop nginx
-        Nginx.disallow_start()
-        Nginx.stop()
-        # you may get a race condition here where are waiting for nginx to
-        # stop and the time you get to renew.
-        time.sleep(1)
+        Nginx.disallow_start()  # Nginx is locked and won't restart
         try:
             if config.debug:
-                subprocess.check_call(["certbot", "renew", "--force-renewal"])
+                subprocess.check_call(NGINX_FORCE_RENEW_CMD, shell=True)
             else:
-                subprocess.check_call(["certbot renew"])
-            Nginx.allow_start()
+                subprocess.check_call(NGINX_RENEW_CMD, shell=True)
         except subprocess.CalledProcessError as perr:
-            logging.debug("error renewing certificate: %s", perr)
+            logging.debug("renewer: error renewing certificate: %s", perr)
         finally:
+            Nginx.allow_start()
             time.sleep(3600)
 
 
