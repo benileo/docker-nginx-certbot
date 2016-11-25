@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+import Queue
 
 logging.basicConfig(level=logging.DEBUG,
                     format="%(asctime)s:autotls:%(message)s")
@@ -75,7 +76,7 @@ CHAIN = "chain.pem"
 
 NGINX_CMD = ["/usr/sbin/nginx", "-g", "daemon off;"]
 
-NGINX_RENEW_CMD = ("""certbot renew --pre-hook 'service nginx stop' """
+NGINX_RENEW_CMD = ("""certbot renew --pre-hook 'nginx -s stop; sleep 2' """
                    """--preferred-challenges http-01 --agree-tos """
                    """--standalone --must-staple """)
 
@@ -213,7 +214,8 @@ class Nginx(object):
         cls._handle = None
 
     @classmethod
-    def on_exit(cls):
+    def exit(cls):
+        logging.debug("calling on exit callback")
         cls._exiting = True
         if cls._handle:
             cls.stop()
@@ -328,7 +330,8 @@ def obtain_cert(config):
     # signal to the renewer that it can start
     Certbot.done_lock.release()
 
-def run_renewer(config):
+
+def run_renewer(config, queue):
     """
     Nginx must be running
     And certbot cmd must be done by now
@@ -341,6 +344,9 @@ def run_renewer(config):
     permissions regarding over-writing the certificates. If they are
     currently being held in memory by the Nginx master process then
     will we be allowed.
+
+    :type queue: Queue.Queue
+    :type config: Config
     """
     wait_for_nginx()
     Certbot.done_lock.acquire()
@@ -357,17 +363,34 @@ def run_renewer(config):
             logging.debug("renewer: error renewing certificate: %s", perr)
         finally:
             Nginx.allow_start()
-            time.sleep(3600)
+            for i in range(1800):
+                try:
+                    queue.get(block=True, timeout=2)
+                except Queue.Empty:
+                    pass
+                else:
+                    # thread exits cleanly upon receiving an item for the queue
+                    logging.debug('renewer: whoa! it\'s time to stop')
+                    return
+
+
+def sigterm_handler():
+    logging.debug('agressive! SIGTERM received')
+    sys.exit(0)
 
 
 def main():
-    atexit.register(Nginx.on_exit)
-    Certbot.done_lock.acquire()
-
     config = parse_environment()
     domain = config.get("domain")
 
-    threading.Thread(target=run_renewer, args=(config,)).start()
+    # todo: remove this lock
+    Certbot.done_lock.acquire()
+
+    exiting = Queue.Queue(maxsize=1)
+    signal.signal(signal.SIGTERM, sigterm_handler)
+    # run renewal loop in a thread
+    renewer = threading.Thread(target=run_renewer, args=(config,exiting))
+    renewer.start()
 
     # Case 1: we don't have a certificate yet
     # write the proxy config and then run certbot. note that the thread will
@@ -387,6 +410,9 @@ def main():
         create_nginx_config_file(domain)
 
     Nginx.run_forever()
+    exiting.put(True)
+    renewer.join()
+    logging.debug('exiting')
 
 if __name__ == "__main__":
     main()

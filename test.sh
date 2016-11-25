@@ -39,19 +39,19 @@ function start_redirect {
     redirect_pid=$!
 }
 
+temp_dir=$(mktemp -d)
+echo "temp dir: ${temp_dir}"
+
 function test_with_correct_env_vars {
-    local container_id=$(docker run \
-        --network=host \
-        -e SERVER=http://127.0.0.1:4000/directory \
-        -e DOMAIN=le1.wtf \
-        -e EMAIL=test@example.com \
-        -e DEBUG=1 \
-        ${IMAGE})
+
+    local container_id=$()
 }
 
 function cleanup {
-    if [ -n $redirect_pid ]; then kill -9 $redirect_pid; fi
-    kill $(jobs -p)
+    sleep 3  # no rush - do it right
+    echo 'performing cleanup'
+    if [ -n ${redirect_pid} ]; then kill -9 ${redirect_pid} 2> /dev/null; fi
+    exit 0
 }
 
 while sudo netstat -lnt46p | grep -E '(433|5002)'; do
@@ -62,7 +62,49 @@ while sudo netstat -lnt46p | grep -E '(433|5002)'; do
         | sudo xargs kill -9
     sleep 1
 done
+
 start_boulder
 start_redirect
-test_with_correct_env_vars
+
+trap cleanup SIGINT
+
+docker run \
+    --network=host \
+    -e SERVER=http://127.0.0.1:4000/directory \
+    -e DOMAIN=le1.wtf \
+    -e EMAIL=test@example.com \
+    -e DEBUG=1 \
+    -v ${temp_dir}/letsencrypt:/etc/letsencrypt \
+    ${IMAGE} &
+
+container_pid=$!
+{
+    sleep 30
+    kill -2 ${container_pid}
+} &
+
+wait ${container_pid}
+echo "first test done"
+echo
+echo
+
+docker run \
+    --network=host \
+    -e SERVER=http://127.0.0.1:4000/directory \
+    -e DOMAIN=le1.wtf \
+    -e EMAIL=test@example.com \
+    -v ${temp_dir}/letsencrypt:/etc/letsencrypt \
+    ${IMAGE} &
+
+container_pid2=$!
+{
+    sleep 15
+    kill -2 ${container_pid2}
+} &
+
+wait ${container_pid2}
+echo "second test done"
+echo
+echo
+
 cleanup

@@ -27,5 +27,7 @@ class RedirectHandler(BaseHTTPServer.BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     server = SocketServer.TCPServer((host, port), RedirectHandler)
+    server.allow_reuse_address = True
     print 'starting http -> https redirect server'
     server.serve_forever()
+    server.server_close()
